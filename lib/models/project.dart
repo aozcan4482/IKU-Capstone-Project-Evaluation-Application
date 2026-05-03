@@ -145,7 +145,9 @@ class CapstoneProject {
       title: json['project_name'],
       description: json['description'] ?? '',
       advisor: json['advisor'] ?? 'N/A',
-      examDateTime: DateTime.parse(json['exam_datetime']),
+      examDateTime: json['exam_datetime'] != null 
+          ? DateTime.parse(json['exam_datetime']) 
+          : DateTime(2099),
       members: members,
     );
   }

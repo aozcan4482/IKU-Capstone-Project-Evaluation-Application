@@ -243,28 +243,33 @@ app.get('/api/users/:id', async (req, res) => {
 // PROJECTS
 // ════════════════════════════════════════════════════════════
 app.post('/api/projects', async (req, res) => {
-    const { project_name, student_id, description, advisor, exam_datetime, member_ids } = req.body;
+    const { project_name, student_id, description, advisor, 
+            exam_datetime, member_ids, advisor_id } = req.body;
     try {
+        let finalName = project_name;
+        if (!finalName || finalName.trim() === '') {
+            const countRes = await pool.query('SELECT COUNT(*) FROM PROJECTS');
+            finalName = `New Project ${parseInt(countRes.rows[0].count) + 1}`;
+        }
+
+        // student_id zorunlu olduğu için geçici olarak admin'i (user_id=10) koy
+        const tempStudentId = student_id || 10;
+
         const result = await pool.query(
-            `INSERT INTO PROJECTS (project_name, student_id, description, advisor, exam_datetime)
-             VALUES ($1,$2,$3,$4,$5) RETURNING *`,
-            [project_name, student_id, description, advisor, exam_datetime]
+            `INSERT INTO PROJECTS 
+                (project_name, student_id, description, advisor, exam_datetime, advisor_id)
+             VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
+            [finalName, tempStudentId, description || '', 
+             advisor || '', exam_datetime || null, advisor_id || null]
         );
         const project = result.rows[0];
 
-        await pool.query(
-            'INSERT INTO PROJECT_MEMBERS (project_id, student_id) VALUES ($1,$2) ON CONFLICT DO NOTHING',
-            [project.project_id, student_id]
-        );
-
         if (Array.isArray(member_ids)) {
             for (const memberId of member_ids) {
-                if (memberId !== student_id) {
-                    await pool.query(
-                        'INSERT INTO PROJECT_MEMBERS (project_id, student_id) VALUES ($1,$2) ON CONFLICT DO NOTHING',
-                        [project.project_id, memberId]
-                    );
-                }
+                await pool.query(
+                    'INSERT INTO PROJECT_MEMBERS (project_id, student_id) VALUES ($1,$2) ON CONFLICT DO NOTHING',
+                    [project.project_id, memberId]
+                );
             }
         }
 
@@ -302,6 +307,37 @@ app.get('/api/projects', async (req, res) => {
         }));
 
         res.json(projects);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+
+app.get('/api/projects/advisor/:advisorId', async (req, res) => {
+    try {
+        const result = await pool.query(`
+            SELECT p.project_id, p.project_name, p.description,
+                   p.advisor, p.exam_datetime, p.status,
+                   u.name AS advisor_name
+            FROM PROJECTS p
+            LEFT JOIN USERS u ON p.advisor_id = u.user_id
+            WHERE p.advisor_id = $1
+            ORDER BY p.project_id
+        `, [req.params.advisorId]);
+        res.json(result.rows);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.get('/api/projects/status/:status', async (req, res) => {
+    try {
+        const result = await pool.query(`
+            SELECT p.project_id, p.project_name, p.status, p.exam_datetime, u.name AS student_name
+            FROM PROJECTS p JOIN USERS u ON p.student_id = u.user_id
+            WHERE p.status = $1 ORDER BY p.exam_datetime
+        `, [req.params.status]);
+        res.json(result.rows);
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -418,18 +454,7 @@ app.post('/api/projects/:id/recalculate-status', async (req, res) => {
     }
 });
 
-app.get('/api/projects/status/:status', async (req, res) => {
-    try {
-        const result = await pool.query(`
-            SELECT p.project_id, p.project_name, p.status, p.exam_datetime, u.name AS student_name
-            FROM PROJECTS p JOIN USERS u ON p.student_id = u.user_id
-            WHERE p.status = $1 ORDER BY p.exam_datetime
-        `, [req.params.status]);
-        res.json(result.rows);
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
+
 
 // ════════════════════════════════════════════════════════════
 // CRITERIA
@@ -993,46 +1018,53 @@ app.get('/api/admin/projects-overview', async (req, res) => {
 // UNLOCK REQUESTS
 // ════════════════════════════════════════════════════════════
 app.post('/api/unlock-requests', async (req, res) => {
-    const { evaluation_id, requested_by, reason } = req.body;
+    const { jury_id, project_id, student_id, reason } = req.body;
 
-    if (!evaluation_id || !requested_by || !reason || reason.trim().length === 0)
-        return res.status(400).json({ error: 'evaluation_id, requested_by and reason are required.' });
+    if (!jury_id || !project_id || !student_id || !reason || reason.trim().length === 0)
+        return res.status(400).json({ error: 'jury_id, project_id, student_id and reason are required.' });
 
     try {
-        const evalCheck = await pool.query(
-            'SELECT evaluation_id, jury_id, project_id, student_id, criteria_id, is_submitted FROM EVALUATIONS WHERE evaluation_id = $1',
-            [evaluation_id]
-        );
-        if (evalCheck.rows.length === 0) return res.status(404).json({ error: 'Evaluation not found.' });
-
-        const evaluation = evalCheck.rows[0];
-        if (evaluation.jury_id !== requested_by)
-            return res.status(403).json({ error: 'You can only request unlock for your own evaluations.' });
-        if (!evaluation.is_submitted)
-            return res.status(400).json({ error: 'This evaluation is already unlocked.' });
-
+        // Zaten PENDING request var mı?
         const pendingCheck = await pool.query(
-            `SELECT request_id FROM UNLOCK_REQUESTS WHERE evaluation_id = $1 AND status = 'PENDING'`,
-            [evaluation_id]
+            `SELECT request_id FROM UNLOCK_REQUESTS 
+             WHERE jury_id = $1 AND project_id = $2 AND student_id = $3 AND status = 'PENDING'`,
+            [jury_id, project_id, student_id]
         );
         if (pendingCheck.rows.length > 0)
-            return res.status(409).json({ error: 'There is already a pending unlock request for this evaluation.' });
+            return res.status(409).json({ error: 'There is already a pending unlock request.' });
 
-        const result = await pool.query(
-            `INSERT INTO UNLOCK_REQUESTS (evaluation_id, requested_by, reason) VALUES ($1,$2,$3) RETURNING *`,
-            [evaluation_id, requested_by, reason.trim()]
+        // O kombinasyondaki evaluation'lar gerçekten submitted mi?
+        const evalCheck = await pool.query(
+            `SELECT COUNT(*) FROM EVALUATIONS 
+             WHERE jury_id = $1 AND project_id = $2 AND student_id = $3 AND is_submitted = TRUE`,
+            [jury_id, project_id, student_id]
         );
+        if (parseInt(evalCheck.rows[0].count) === 0)
+            return res.status(400).json({ error: 'No submitted evaluations found.' });
 
-        await logAudit({
-            actorUserId:  requested_by,
-            actionType:   'UNLOCK_REQUESTED',
-            evaluationId: evaluation_id,
-            projectId:    evaluation.project_id,
-            studentId:    evaluation.student_id,
-            criteriaId:   evaluation.criteria_id,
-            oldScore:     null, newScore: null,
-            comment:      reason.trim(),
-        });
+        const result = await pool.query(`
+            INSERT INTO UNLOCK_REQUESTS (jury_id, project_id, student_id, reason)
+            VALUES ($1, $2, $3, $4) RETURNING *
+        `, [jury_id, project_id, student_id, reason.trim()]);
+
+        // Audit log — her evaluation için ayrı kayıt
+        const evals = await pool.query(
+            `SELECT evaluation_id, criteria_id FROM EVALUATIONS 
+             WHERE jury_id = $1 AND project_id = $2 AND student_id = $3`,
+            [jury_id, project_id, student_id]
+        );
+        for (const e of evals.rows) {
+            await logAudit({
+                actorUserId:  jury_id,
+                actionType:   'UNLOCK_REQUESTED',
+                evaluationId: e.evaluation_id,
+                projectId:    project_id,
+                studentId:    student_id,
+                criteriaId:   e.criteria_id,
+                oldScore:     null, newScore: null,
+                comment:      reason.trim(),
+            });
+        }
 
         res.status(201).json(result.rows[0]);
     } catch (err) {
@@ -1043,13 +1075,11 @@ app.post('/api/unlock-requests', async (req, res) => {
 app.get('/api/unlock-requests/jury/:juryId', async (req, res) => {
     try {
         const result = await pool.query(`
-            SELECT ur.*, c.criteria_name, p.project_name, s.name AS student_name
+            SELECT ur.*, p.project_name, s.name AS student_name
             FROM UNLOCK_REQUESTS ur
-            JOIN EVALUATIONS e ON ur.evaluation_id = e.evaluation_id
-            JOIN CRITERIA    c ON e.criteria_id    = c.criteria_id
-            JOIN PROJECTS    p ON e.project_id     = p.project_id
-            JOIN USERS       s ON e.student_id     = s.user_id
-            WHERE ur.requested_by = $1
+            JOIN PROJECTS p ON ur.project_id = p.project_id
+            JOIN USERS    s ON ur.student_id  = s.user_id
+            WHERE ur.jury_id = $1
             ORDER BY ur.created_at DESC
         `, [req.params.juryId]);
         res.json(result.rows);
@@ -1072,23 +1102,18 @@ app.get('/api/admin/unlock-requests', async (req, res) => {
 
     try {
         const result = await pool.query(`
-            SELECT ur.request_id, ur.evaluation_id, ur.reason, ur.status,
-                   ur.admin_comment, ur.created_at, ur.reviewed_at,
-                   jury.user_id      AS jury_id,
+            SELECT ur.request_id, ur.jury_id, ur.project_id, ur.student_id,
+                   ur.reason, ur.status, ur.admin_comment,
+                   ur.created_at, ur.reviewed_at,
                    jury.name         AS jury_name,
                    reviewer.name     AS reviewer_name,
-                   e.score,
-                   c.criteria_name,
-                   p.project_id,
                    p.project_name,
                    student.name      AS student_name
             FROM UNLOCK_REQUESTS ur
-            JOIN USERS       jury     ON ur.requested_by  = jury.user_id
-            LEFT JOIN USERS  reviewer ON ur.reviewed_by   = reviewer.user_id
-            JOIN EVALUATIONS e        ON ur.evaluation_id = e.evaluation_id
-            JOIN CRITERIA    c        ON e.criteria_id    = c.criteria_id
-            JOIN PROJECTS    p        ON e.project_id     = p.project_id
-            JOIN USERS       student  ON e.student_id     = student.user_id
+            JOIN USERS       jury     ON ur.jury_id    = jury.user_id
+            LEFT JOIN USERS  reviewer ON ur.reviewed_by = reviewer.user_id
+            JOIN PROJECTS    p        ON ur.project_id  = p.project_id
+            JOIN USERS       student  ON ur.student_id  = student.user_id
             ${whereClause}
             ORDER BY ur.created_at DESC
         `);
@@ -1099,7 +1124,7 @@ app.get('/api/admin/unlock-requests', async (req, res) => {
 });
 
 app.put('/api/admin/unlock-requests/:requestId', async (req, res) => {
-    const { requestId }                        = req.params;
+    const { requestId } = req.params;
     const { decision, admin_comment, admin_user_id } = req.body;
 
     const isAdmin = await verifyAdmin(admin_user_id);
@@ -1110,12 +1135,10 @@ app.put('/api/admin/unlock-requests/:requestId', async (req, res) => {
 
     try {
         const reqCheck = await pool.query(
-            `SELECT ur.*, e.project_id, e.student_id, e.criteria_id
-             FROM UNLOCK_REQUESTS ur JOIN EVALUATIONS e ON ur.evaluation_id = e.evaluation_id
-             WHERE ur.request_id = $1`,
-            [requestId]
+            'SELECT * FROM UNLOCK_REQUESTS WHERE request_id = $1', [requestId]
         );
-        if (reqCheck.rows.length === 0) return res.status(404).json({ error: 'Unlock request not found.' });
+        if (reqCheck.rows.length === 0)
+            return res.status(404).json({ error: 'Unlock request not found.' });
 
         const request = reqCheck.rows[0];
         if (request.status !== 'PENDING')
@@ -1130,22 +1153,32 @@ app.put('/api/admin/unlock-requests/:requestId', async (req, res) => {
         `, [newStatus, admin_user_id, admin_comment ?? null, requestId]);
 
         if (decision === 'APPROVE') {
+            // Tüm kombinasyonu unlock et
             await pool.query(
-                'UPDATE EVALUATIONS SET is_submitted = FALSE WHERE evaluation_id = $1',
-                [request.evaluation_id]
+                `UPDATE EVALUATIONS SET is_submitted = FALSE 
+                 WHERE jury_id = $1 AND project_id = $2 AND student_id = $3`,
+                [request.jury_id, request.project_id, request.student_id]
             );
         }
 
-        await logAudit({
-            actorUserId:  admin_user_id,
-            actionType:   decision === 'APPROVE' ? 'UNLOCK_APPROVED' : 'UNLOCK_DENIED',
-            evaluationId: request.evaluation_id,
-            projectId:    request.project_id,
-            studentId:    request.student_id,
-            criteriaId:   request.criteria_id,
-            oldScore:     null, newScore: null,
-            comment:      admin_comment ?? null,
-        });
+        // Audit log
+        const evals = await pool.query(
+            `SELECT evaluation_id, criteria_id FROM EVALUATIONS 
+             WHERE jury_id = $1 AND project_id = $2 AND student_id = $3`,
+            [request.jury_id, request.project_id, request.student_id]
+        );
+        for (const e of evals.rows) {
+            await logAudit({
+                actorUserId:  admin_user_id,
+                actionType:   decision === 'APPROVE' ? 'UNLOCK_APPROVED' : 'UNLOCK_DENIED',
+                evaluationId: e.evaluation_id,
+                projectId:    request.project_id,
+                studentId:    request.student_id,
+                criteriaId:   e.criteria_id,
+                oldScore:     null, newScore: null,
+                comment:      admin_comment ?? null,
+            });
+        }
 
         res.json(updated.rows[0]);
     } catch (err) {
@@ -1156,4 +1189,68 @@ app.put('/api/admin/unlock-requests/:requestId', async (req, res) => {
 // ── Sunucuyu Başlat ───────────────────────────────────────
 app.listen(PORT, () => {
     console.log(`Server running on http://localhost:${PORT}`);
+});
+
+// Admin Panel Eklemeleri
+
+// Advisor'ın projelerini getir (sidebar için)
+
+
+//Proje adı/desc güncelle (advisor tarafından)
+
+app.put('/api/projects/:id', async (req, res) => {
+    try {
+        const { project_name, description } = req.body;
+        const result = await pool.query(`
+            UPDATE PROJECTS 
+            SET project_name = $1, description = $2
+            WHERE project_id = $3
+            RETURNING *
+        `, [project_name, description, req.params.id]);
+        if (result.rows.length === 0)
+            return res.status(404).json({ error: 'Project not found' });
+        res.json(result.rows[0]);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+ // Projeye Advisor Atama
+ app.put('/api/projects/:id/advisor', async (req, res) => {
+    try {
+        const { advisor_id } = req.body;
+        // Kullanıcının adını da advisor string olarak kaydet
+        const userRes = await pool.query(
+            'SELECT name FROM USERS WHERE user_id = $1', [advisor_id]
+        );
+        if (userRes.rows.length === 0)
+            return res.status(404).json({ error: 'User not found' });
+
+        const result = await pool.query(`
+            UPDATE PROJECTS 
+            SET advisor_id = $1, advisor = $2
+            WHERE project_id = $3
+            RETURNING *
+        `, [advisor_id, userRes.rows[0].name, req.params.id]);
+
+        if (result.rows.length === 0)
+            return res.status(404).json({ error: 'Project not found' });
+        res.json(result.rows[0]);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+
+// Kullanıcıları Rollere göre getirme (Admin Paneli Dropdown)
+app.get('/api/users/role/:role', async (req, res) => {
+    try {
+        const result = await pool.query(
+            `SELECT user_id, cats_username, name, email, role 
+             FROM USERS WHERE role = $1 ORDER BY name`,
+            [req.params.role]
+        );
+        res.json(result.rows);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });

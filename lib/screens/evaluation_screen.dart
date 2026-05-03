@@ -1211,7 +1211,7 @@ class _EvaluationScreenState extends State<EvaluationScreen> {
                                   }
                                   setSheet(() => submitting = true);
                                   final ok = await _submitUnlockRequest(
-                                    eval: eval,
+                                    member: member,
                                     reason: reason,
                                   );
                                   if (!mounted) return;
@@ -1257,23 +1257,21 @@ class _EvaluationScreenState extends State<EvaluationScreen> {
   }
 
   Future<bool> _submitUnlockRequest({
-    required MemberEvaluation eval,
+    required ProjectMember member,
     required String reason,
   }) async {
     try {
-      for (final evalId in eval.evaluationIds) {
-        final resp = await http.post(
-          Uri.parse('http://localhost:3000/api/unlock-requests'),
-          headers: {'Content-Type': 'application/json'},
-          body: jsonEncode({
-            'evaluation_id': evalId,
-            'requested_by':  widget.juryId,
-            'reason':        reason,
-          }),
-        );
-        if (resp.statusCode < 200 || resp.statusCode >= 300) return false;
-      }
-      return true;
+      final resp = await http.post(
+        Uri.parse('http://localhost:3000/api/unlock-requests'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'jury_id':    widget.juryId,
+          'project_id': int.parse(widget.project.id),
+          'student_id': member.userId,
+          'reason':     reason,
+        }),
+      );
+      return resp.statusCode >= 200 && resp.statusCode < 300;
     } catch (_) {
       return false;
     }
