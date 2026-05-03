@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'package:capstone_evaluationapp/models/project.dart';
-import 'package:capstone_evaluationapp/services/evaluation_storage.dart';
 import 'package:capstone_evaluationapp/screens/evaluation_screen.dart';
 import 'package:capstone_evaluationapp/screens/results_dashboard.dart';
 
@@ -41,62 +40,113 @@ class _HomeScreenState extends State<HomeScreen> {
     _loadProjects();
   }
 
-  Future<void> _loadProjects() async {
-    if (_user == null) return;
-    setState(() {
-      _isLoading = true;
-      _errorMessage = null;
-    });
-    try {
-      final juryId = _user!['user_id'];
+Future<void> _loadProjects() async {
+  if (_user == null) return;
+  setState(() {
+    _isLoading = true;
+    _errorMessage = null;
+  });
+  try {
+    final juryId = _user!['user_id'];
 
-      // Kriterleri paralel çek
-      final criteriaRes = await http.get(
-        Uri.parse('http://localhost:3000/api/criteria'),
-      );
-      if (criteriaRes.statusCode == 200) {
-        final List cData = jsonDecode(criteriaRes.body);
-        _criteriaNames = cData.map((c) => c['criteria_name'] as String).toList();
-      }
-
-      // Atanmış projeleri çek
-      final response = await http.get(
-        Uri.parse('http://localhost:3000/api/assignments/jury/$juryId'),
-      );
-      if (response.statusCode != 200) {
-        setState(() {
-          _errorMessage = 'Failed to load projects.';
-          _isLoading = false;
-        });
-        return;
-      }
-
-      final List data = jsonDecode(response.body);
-      final projects = data.map((p) => CapstoneProject.fromJson(p)).toList();
-
-      // Her proje için SharedPreferences'tan üye durumlarını yükle
-      final enriched = <CapstoneProject>[];
-      for (final project in projects) {
-        final memberEvals = await EvaluationStorage.loadForProject(
-          juryId: juryId,
-          projectId: project.id,
-          members: project.members,
-          criteria: _criteriaNames,
-        );
-        enriched.add(project.copyWith(memberEvaluations: memberEvals));
-      }
-
-      setState(() {
-        _projects = enriched;
-        _isLoading = false;
-      });
-    } catch (e) {
-      setState(() {
-        _errorMessage = 'Could not connect to server.';
-        _isLoading = false;
-      });
+    // Kriterleri çek
+    final criteriaRes = await http.get(
+      Uri.parse('http://localhost:3000/api/criteria'),
+    );
+    if (criteriaRes.statusCode == 200) {
+      final List cData = jsonDecode(criteriaRes.body);
+      _criteriaNames = cData.map((c) => c['criteria_name'] as String).toList();
     }
+
+    // Atanmış projeleri çek
+    final response = await http.get(
+      Uri.parse('http://localhost:3000/api/assignments/jury/$juryId'),
+    );
+    if (response.statusCode != 200) {
+      setState(() {
+        _errorMessage = 'Failed to load projects.';
+        _isLoading = false;
+      });
+      return;
+    }
+
+    final List data = jsonDecode(response.body);
+    final projects = data.map((p) => CapstoneProject.fromJson(p)).toList();
+
+    // Her proje için backend'den evaluation durumlarını çek
+    final enriched = <CapstoneProject>[];
+    for (final project in projects) {
+      final evalRes = await http.get(
+        Uri.parse('http://localhost:3000/api/evaluations/jury/$juryId/project/${project.id}'),
+      );
+
+      final Map<String, MemberEvaluation> memberEvals = {
+        for (final m in project.members)
+          m.studentId: MemberEvaluation.empty(_criteriaNames),
+      };
+
+      if (evalRes.statusCode == 200) {
+        final List backendRows = jsonDecode(evalRes.body);
+
+        // Backend satırlarını student'a göre grupla
+        final Map<String, List<dynamic>> byStudent = {};
+        for (final row in backendRows) {
+          final studentUserId = row['student_id'].toString();
+          final member = project.members.firstWhere(
+            (m) => m.userId.toString() == studentUserId,
+            orElse: () => ProjectMember(userId: -1, name: '', studentId: ''),
+          );
+          if (member.userId == -1) continue;
+          byStudent.putIfAbsent(member.studentId, () => []);
+          byStudent[member.studentId]!.add(row);
+        }
+
+        // Her üye için durumu belirle
+        for (final member in project.members) {
+          final rows = byStudent[member.studentId];
+          if (rows == null || rows.isEmpty) continue;
+
+          final scores = <String, double?>{};
+          final ids = <int>[];
+          for (final r in rows) {
+            scores[r['criteria_name'] as String] = (r['score'] as num).toDouble();
+            ids.add(r['evaluation_id'] as int);
+          }
+
+          final allSubmitted = rows.every((r) => r['is_submitted'] == true);
+          final anyUnlocked  = rows.any((r) => r['is_submitted'] == false);
+
+          if (anyUnlocked) {
+            memberEvals[member.studentId] = MemberEvaluation(
+              scores: scores,
+              status: MemberEvaluationStatus.inProgress,
+              evaluationIds: ids,
+            );
+          } else if (allSubmitted) {
+            memberEvals[member.studentId] = MemberEvaluation(
+              scores: scores,
+              status: MemberEvaluationStatus.submitted,
+              submittedAt: DateTime.now(),
+              evaluationIds: ids,
+            );
+          }
+        }
+      }
+
+      enriched.add(project.copyWith(memberEvaluations: memberEvals));
+    }
+
+    setState(() {
+      _projects = enriched;
+      _isLoading = false;
+    });
+  } catch (e) {
+    setState(() {
+      _errorMessage = 'Could not connect to server.';
+      _isLoading = false;
+    });
   }
+}
 
   Future<void> _openEvaluation(CapstoneProject project) async {
     await Navigator.of(context).push(
