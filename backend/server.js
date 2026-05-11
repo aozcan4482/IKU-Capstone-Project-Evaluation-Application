@@ -8,11 +8,46 @@
 const express = require('express');
 const { Pool } = require('pg');
 const axios   = require('axios');
+const multer  = require('multer');
+const path    = require('path');
+const fs      = require('fs');
 
 const app  = express();
 const PORT = 3000;
 
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
+  if (req.method === 'OPTIONS') return res.sendStatus(200);
+  next();
+});
+
 app.use(express.json());
+
+// ── Uploads klasörünü oluştur ─────────────────────────────
+const uploadsDir = path.join(__dirname, 'uploads', 'reports');
+if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
+
+// ── Multer config ─────────────────────────────────────────
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, uploadsDir),
+  filename: (req, file, cb) => {
+    const unique = `${Date.now()}_${Math.round(Math.random() * 1e6)}`;
+    cb(null, `${unique}${path.extname(file.originalname)}`);
+  },
+});
+const upload = multer({
+  storage,
+  limits: { fileSize: 20 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype === 'application/pdf') cb(null, true);
+    else cb(new Error('Only PDF files are allowed.'));
+  },
+});
+
+// ── Static file serving ───────────────────────────────────
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // ── Veritabanı Bağlantısı ─────────────────────────────────
 const pool = new Pool({
@@ -77,7 +112,6 @@ async function updateProjectStatus(projectId) {
     );
     const totalJuries    = parseInt(assignmentsRes.rows[0].count);
 
-    // Finalized: tüm öğrencilerin final skoru hesaplanmış
     const finalRes = await pool.query(
         'SELECT COUNT(*) FROM FINAL_RESULTS WHERE project_id = $1', [projectId]
     );
@@ -87,7 +121,6 @@ async function updateProjectStatus(projectId) {
         return 'Finalized';
     }
 
-    // Bir jürinin tamamlanmış sayılması: her öğrenciye her kriterden puan vermiş olması
     const evalsPerJury    = totalCriteria * totalStudents;
     const completedJuries = await pool.query(`
         SELECT jury_id, COUNT(*) AS done_count
@@ -113,7 +146,6 @@ async function updateProjectStatus(projectId) {
 
     await pool.query('UPDATE PROJECTS SET status = $1 WHERE project_id = $2', [status, projectId]);
 
-    // is_completed bayraklarını güncelle
     for (const row of completedJuries.rows) {
         await pool.query(`
             UPDATE JURY_ASSIGNMENTS
@@ -164,7 +196,6 @@ async function logAudit({
 app.post('/api/auth/login', async (req, res) => {
     const { cats_username, password } = req.body;
 
-    // Önce kullanıcıyı DB'den bul
     const user = await getUserByCatsUsername(cats_username);
     if (!user) {
         return res.status(403).json({ error: 'User not found in database' });
@@ -173,7 +204,6 @@ app.post('/api/auth/login', async (req, res) => {
     const isAdmin = user.role === 'Admin';
 
     if (!isAdmin) {
-        // Normal Jury/Student: CATS doğrulaması
         try {
             const catsResponse = await axios.post(
                 'https://cats.iku.edu.tr/portal/xlogin',
@@ -193,7 +223,6 @@ app.post('/api/auth/login', async (req, res) => {
             }
         }
     } else {
-        // Admin: basit şifre kontrolü
         if (password !== 'admin123') {
             return res.status(401).json({ error: 'Authentication failed' });
         }
@@ -252,7 +281,6 @@ app.post('/api/projects', async (req, res) => {
             finalName = `New Project ${parseInt(countRes.rows[0].count) + 1}`;
         }
 
-        // student_id zorunlu olduğu için geçici olarak admin'i (user_id=10) koy
         const tempStudentId = student_id || 10;
 
         const result = await pool.query(
@@ -311,7 +339,6 @@ app.get('/api/projects', async (req, res) => {
         res.status(500).json({ error: err.message });
     }
 });
-
 
 app.get('/api/projects/advisor/:advisorId', async (req, res) => {
     try {
@@ -406,7 +433,6 @@ app.get('/api/projects/:id/members', async (req, res) => {
     }
 });
 
-// Proje durum/workflow endpoint'leri
 app.get('/api/projects/:id/state', async (req, res) => {
     try {
         const projectId = req.params.id;
@@ -454,8 +480,6 @@ app.post('/api/projects/:id/recalculate-status', async (req, res) => {
     }
 });
 
-
-
 // ════════════════════════════════════════════════════════════
 // CRITERIA
 // ════════════════════════════════════════════════════════════
@@ -475,7 +499,6 @@ app.post('/api/criteria', async (req, res) => {
 
 // ════════════════════════════════════════════════════════════
 // EVALUATIONS
-// Lock kontrollü upsert + audit log + project status güncelleme
 // ════════════════════════════════════════════════════════════
 app.post('/api/evaluations', async (req, res) => {
     const { jury_id, project_id, student_id, criteria_id, score, comment } = req.body;
@@ -495,7 +518,6 @@ app.post('/api/evaluations', async (req, res) => {
         const oldScore     = isUpdate ? existingRes.rows[0].score : null;
         const wasSubmitted = isUpdate ? existingRes.rows[0].is_submitted : false;
 
-        // Lock kontrolü
         if (isUpdate && wasSubmitted) {
             return res.status(403).json({
                 error: 'This evaluation is locked. Request an unlock from admin to modify it.'
@@ -533,7 +555,6 @@ app.post('/api/evaluations', async (req, res) => {
     }
 });
 
-// Jürinin kendi evaluation'ları (tüm projeler)
 app.get('/api/evaluations/jury/:juryId', async (req, res) => {
     const result = await pool.query(`
         SELECT e.evaluation_id, p.project_name,
@@ -549,8 +570,6 @@ app.get('/api/evaluations/jury/:juryId', async (req, res) => {
     res.json(result.rows);
 });
 
-// Jürinin belirli bir projedeki evaluation'ları (is_submitted dahil)
-// Flutter bu endpoint'i kullanarak unlock durumunu öğrenir
 app.get('/api/evaluations/jury/:juryId/project/:projectId', async (req, res) => {
     try {
         const result = await pool.query(`
@@ -590,7 +609,6 @@ app.put('/api/evaluations/:id/jury/:juryId', async (req, res) => {
     res.json(result.rows[0]);
 });
 
-// Bir projenin tüm evaluation'ları
 app.get('/api/evaluations/project/:projectId', async (req, res) => {
     const result = await pool.query(`
         SELECT e.evaluation_id, u.name AS jury_name,
@@ -606,7 +624,6 @@ app.get('/api/evaluations/project/:projectId', async (req, res) => {
     res.json(result.rows);
 });
 
-// Belirli bir öğrencinin evaluation'ları
 app.get('/api/evaluations/project/:projectId/student/:studentId', async (req, res) => {
     const result = await pool.query(`
         SELECT e.evaluation_id, u.name AS jury_name,
@@ -620,7 +637,6 @@ app.get('/api/evaluations/project/:projectId/student/:studentId', async (req, re
     res.json(result.rows);
 });
 
-// Jürinin bekleyen evaluation'ları
 app.get('/api/jury/:juryId/pending-evaluations', async (req, res) => {
     try {
         const result = await pool.query(`
@@ -648,7 +664,6 @@ app.get('/api/jury/:juryId/pending-evaluations', async (req, res) => {
     }
 });
 
-// Jürinin ilerleme durumu
 app.get('/api/jury/:juryId/progress', async (req, res) => {
     try {
         const juryId        = req.params.juryId;
@@ -885,13 +900,17 @@ app.put('/api/student/:studentId/project', async (req, res) => {
 app.get('/api/student/:studentId/result', async (req, res) => {
     try {
         const result = await pool.query(`
-            SELECT fr.total_weighted_score, fr.generated_at, p.project_name
+            SELECT fr.total_weighted_score, fr.generated_at, p.project_name, p.results_published
             FROM FINAL_RESULTS fr
             JOIN PROJECTS p ON fr.project_id = p.project_id
             WHERE fr.student_id = $1
             ORDER BY fr.generated_at DESC LIMIT 1
         `, [req.params.studentId]);
+        
         if (result.rows.length === 0) return res.json({ score: null });
+        
+        if (!result.rows[0].results_published) return res.json({ score: null });
+        
         res.json({
             score:        result.rows[0].total_weighted_score,
             project_name: result.rows[0].project_name,
@@ -905,8 +924,6 @@ app.get('/api/student/:studentId/result', async (req, res) => {
 // ════════════════════════════════════════════════════════════
 // ADMIN ENDPOINTS
 // ════════════════════════════════════════════════════════════
-
-// Statistics — v3 versiyonu (status breakdown dahil)
 app.get('/api/admin/statistics', async (req, res) => {
     const { admin_user_id } = req.query;
     const isAdmin = await verifyAdmin(admin_user_id);
@@ -935,7 +952,6 @@ app.get('/api/admin/statistics', async (req, res) => {
     }
 });
 
-// Audit Log
 app.get('/api/admin/audit-log', async (req, res) => {
     const { admin_user_id, actor_user_id, project_id, action_type, date_from, date_to, limit } = req.query;
 
@@ -984,7 +1000,6 @@ app.get('/api/admin/audit-log', async (req, res) => {
     }
 });
 
-// Projects overview (admin)
 app.get('/api/admin/projects-overview', async (req, res) => {
     try {
         const result = await pool.query(`
@@ -1024,7 +1039,6 @@ app.post('/api/unlock-requests', async (req, res) => {
         return res.status(400).json({ error: 'jury_id, project_id, student_id and reason are required.' });
 
     try {
-        // Zaten PENDING request var mı?
         const pendingCheck = await pool.query(
             `SELECT request_id FROM UNLOCK_REQUESTS 
              WHERE jury_id = $1 AND project_id = $2 AND student_id = $3 AND status = 'PENDING'`,
@@ -1033,7 +1047,6 @@ app.post('/api/unlock-requests', async (req, res) => {
         if (pendingCheck.rows.length > 0)
             return res.status(409).json({ error: 'There is already a pending unlock request.' });
 
-        // O kombinasyondaki evaluation'lar gerçekten submitted mi?
         const evalCheck = await pool.query(
             `SELECT COUNT(*) FROM EVALUATIONS 
              WHERE jury_id = $1 AND project_id = $2 AND student_id = $3 AND is_submitted = TRUE`,
@@ -1047,7 +1060,6 @@ app.post('/api/unlock-requests', async (req, res) => {
             VALUES ($1, $2, $3, $4) RETURNING *
         `, [jury_id, project_id, student_id, reason.trim()]);
 
-        // Audit log — her evaluation için ayrı kayıt
         const evals = await pool.query(
             `SELECT evaluation_id, criteria_id FROM EVALUATIONS 
              WHERE jury_id = $1 AND project_id = $2 AND student_id = $3`,
@@ -1153,7 +1165,6 @@ app.put('/api/admin/unlock-requests/:requestId', async (req, res) => {
         `, [newStatus, admin_user_id, admin_comment ?? null, requestId]);
 
         if (decision === 'APPROVE') {
-            // Tüm kombinasyonu unlock et
             await pool.query(
                 `UPDATE EVALUATIONS SET is_submitted = FALSE 
                  WHERE jury_id = $1 AND project_id = $2 AND student_id = $3`,
@@ -1161,7 +1172,6 @@ app.put('/api/admin/unlock-requests/:requestId', async (req, res) => {
             );
         }
 
-        // Audit log
         const evals = await pool.query(
             `SELECT evaluation_id, criteria_id FROM EVALUATIONS 
              WHERE jury_id = $1 AND project_id = $2 AND student_id = $3`,
@@ -1187,17 +1197,14 @@ app.put('/api/admin/unlock-requests/:requestId', async (req, res) => {
 });
 
 // ── Sunucuyu Başlat ───────────────────────────────────────
-app.listen(PORT, () => {
-    console.log(`Server running on http://localhost:${PORT}`);
+app.listen(PORT, '0.0.0.0', () => {
+    console.log(`Server running on http://0.0.0.0:${PORT}`);
+    console.log(`Connect from other devices using your laptop IP:${PORT}`);
 });
 
-// Admin Panel Eklemeleri
-
-// Advisor'ın projelerini getir (sidebar için)
-
-
-//Proje adı/desc güncelle (advisor tarafından)
-
+// ════════════════════════════════════════════════════════════
+// PROJECTS — Güncelleme endpoint'leri
+// ════════════════════════════════════════════════════════════
 app.put('/api/projects/:id', async (req, res) => {
     try {
         const { project_name, description } = req.body;
@@ -1214,11 +1221,10 @@ app.put('/api/projects/:id', async (req, res) => {
         res.status(500).json({ error: err.message });
     }
 });
- // Projeye Advisor Atama
- app.put('/api/projects/:id/advisor', async (req, res) => {
+
+app.put('/api/projects/:id/advisor', async (req, res) => {
     try {
         const { advisor_id } = req.body;
-        // Kullanıcının adını da advisor string olarak kaydet
         const userRes = await pool.query(
             'SELECT name FROM USERS WHERE user_id = $1', [advisor_id]
         );
@@ -1240,8 +1246,30 @@ app.put('/api/projects/:id', async (req, res) => {
     }
 });
 
+// Sonuçları öğrenciye yayınla (Admin)
+app.put('/api/projects/:id/publish-results', async (req, res) => {
+    try {
+        const { admin_user_id } = req.body;
+        const isAdmin = await verifyAdmin(admin_user_id);
+        if (!isAdmin) return res.status(403).json({ error: 'Admin privileges required.' });
 
-// Kullanıcıları Rollere göre getirme (Admin Paneli Dropdown)
+        const result = await pool.query(`
+            UPDATE PROJECTS 
+            SET results_published = TRUE 
+            WHERE project_id = $1 
+            RETURNING project_id, project_name, results_published, status
+        `, [req.params.id]);
+
+        if (result.rows.length === 0)
+            return res.status(404).json({ error: 'Project not found' });
+
+        res.json(result.rows[0]);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Kullanıcıları Rollere göre getirme
 app.get('/api/users/role/:role', async (req, res) => {
     try {
         const result = await pool.query(
@@ -1251,6 +1279,318 @@ app.get('/api/users/role/:role', async (req, res) => {
         );
         res.json(result.rows);
     } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// ════════════════════════════════════════════════════════════
+// REPORTS — Tez yükleme ve listeleme
+// ════════════════════════════════════════════════════════════
+app.post('/api/reports/:projectId', upload.single('report'), async (req, res) => {
+    try {
+        const { projectId } = req.params;
+        const { student_id } = req.body;
+
+        if (!req.file) return res.status(400).json({ error: 'No file uploaded.' });
+        if (!student_id) return res.status(400).json({ error: 'student_id is required.' });
+
+        const filePath = `uploads/reports/${req.file.filename}`;
+
+        const originalName = Buffer.from(req.file.originalname, 'latin1').toString('utf8');
+        const result = await pool.query(`
+          INSERT INTO REPORTS (project_id, student_id, filename, file_path, file_size)
+          VALUES ($1, $2, $3, $4, $5) RETURNING *
+`         , [projectId, student_id, originalName, filePath, req.file.size]);
+
+        res.status(201).json(result.rows[0]);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.get('/api/reports/:projectId', async (req, res) => {
+    try {
+        const result = await pool.query(`
+            SELECT r.*, u.name AS student_name
+            FROM REPORTS r
+            JOIN USERS u ON r.student_id = u.user_id
+            WHERE r.project_id = $1
+            ORDER BY r.uploaded_at DESC
+        `, [req.params.projectId]);
+        res.json(result.rows);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// ════════════════════════════════════════════════════════════
+// PDF EXPORT — Proje sonuç raporu
+// ════════════════════════════════════════════════════════════
+const PDFDocument = require('pdfkit');
+
+app.get('/api/reports/export/:projectId', async (req, res) => {
+    try {
+        const projectId = req.params.projectId;
+
+        // 1. Proje bilgilerini çek
+        const projectRes = await pool.query(
+            'SELECT * FROM PROJECTS WHERE project_id = $1', [projectId]
+        );
+        if (projectRes.rows.length === 0)
+            return res.status(404).json({ error: 'Project not found' });
+        const project = projectRes.rows[0];
+
+        // 2. Proje üyelerini çek
+        const membersRes = await pool.query(`
+            SELECT u.user_id, u.name, u.cats_username
+            FROM PROJECT_MEMBERS pm
+            JOIN USERS u ON pm.student_id = u.user_id
+            WHERE pm.project_id = $1 ORDER BY u.name
+        `, [projectId]);
+        const members = membersRes.rows;
+
+        // 3. Atanan jürileri çek
+        const juriesRes = await pool.query(`
+            SELECT u.user_id, u.name
+            FROM JURY_ASSIGNMENTS ja
+            JOIN USERS u ON ja.jury_id = u.user_id
+            WHERE ja.project_id = $1 ORDER BY u.name
+        `, [projectId]);
+        const juries = juriesRes.rows;
+
+        // 4. Kriterleri çek
+        const criteriaRes = await pool.query(
+            'SELECT * FROM CRITERIA ORDER BY criteria_id'
+        );
+        const criteria = criteriaRes.rows;
+
+        // 5. Tüm evaluation'ları çek
+        const evalsRes = await pool.query(`
+            SELECT e.jury_id, e.student_id, e.criteria_id, e.score,
+                   u.name AS jury_name, s.name AS student_name,
+                   c.criteria_name, c.weight
+            FROM EVALUATIONS e
+            JOIN USERS u ON e.jury_id = u.user_id
+            JOIN USERS s ON e.student_id = s.user_id
+            JOIN CRITERIA c ON e.criteria_id = c.criteria_id
+            WHERE e.project_id = $1
+            ORDER BY e.student_id, e.jury_id, e.criteria_id
+        `, [projectId]);
+        const evals = evalsRes.rows;
+
+        // 6. Final skorları çek
+        const finalRes = await pool.query(`
+            SELECT fr.student_id, fr.total_weighted_score, u.name AS student_name
+            FROM FINAL_RESULTS fr
+            JOIN USERS u ON fr.student_id = u.user_id
+            WHERE fr.project_id = $1
+            ORDER BY fr.total_weighted_score DESC
+        `, [projectId]);
+        const finalScores = finalRes.rows;
+
+        // ── Veriyi yapılandır ──────────────────────────────
+        const scoreMap = {};
+        for (const member of members) {
+            scoreMap[member.user_id] = {};
+            for (const jury of juries) {
+                scoreMap[member.user_id][jury.user_id] = {};
+            }
+        }
+        for (const e of evals) {
+            if (scoreMap[e.student_id] && scoreMap[e.student_id][e.jury_id] !== undefined) {
+                scoreMap[e.student_id][e.jury_id][e.criteria_name] = {
+                    score: parseFloat(e.score),
+                    weight: parseFloat(e.weight)
+                };
+            }
+        }
+
+        function juryWeightedAvg(studentId, juryId) {
+            const juryScores = scoreMap[studentId]?.[juryId] || {};
+            let total = 0, totalWeight = 0;
+            for (const c of criteria) {
+                const entry = juryScores[c.criteria_name];
+                if (entry) {
+                    total += entry.score * entry.weight;
+                    totalWeight += entry.weight;
+                }
+            }
+            return totalWeight === 0 ? 0 : total / totalWeight;
+        }
+
+        // ── Font ayarı ─────────────────────────────────────
+        // Arial fontları backend/fonts/ klasöründe olmalı
+        const fontPath = path.join(__dirname, 'fonts');
+        const arialExists = fs.existsSync(path.join(fontPath, 'arial.ttf'));
+
+        const doc = new PDFDocument({ margin: 50, size: 'A4' });
+
+        if (arialExists) {
+            doc.registerFont('Regular', path.join(fontPath, 'arial.ttf'));
+            doc.registerFont('Bold', path.join(fontPath, 'arialbd.ttf'));
+        } else {
+            // Fallback: Helvetica (Türkçe ı/ğ bozuk görünebilir)
+            doc.registerFont('Regular', 'Helvetica');
+            doc.registerFont('Bold', 'Helvetica-Bold');
+        }
+
+        // HTTP başlıkları
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader(
+            'Content-Disposition',
+            `inline; filename="project_${projectId}_report.pdf"`
+        );
+        doc.pipe(res);
+
+        const RED   = '#D31018';
+        const GREY  = '#4A4A49';
+        const LGREY = '#888888';
+        const pageW = doc.page.width - 100;
+
+        // ── BAŞLIK BÖLÜMÜ ──────────────────────────────────
+        const exportDate = new Date().toLocaleDateString('en-GB', {
+            day: '2-digit', month: 'long', year: 'numeric'
+        });
+
+        doc.fontSize(9).fillColor(LGREY).font('Regular')
+           .text(`Exported: ${exportDate}`, 50, 50, { align: 'right', width: pageW });
+
+        doc.fontSize(11).fillColor(RED).font('Bold')
+           .text('T.C. ISTANBUL KULTUR UNIVERSITY', 50, 50, { align: 'center', width: pageW });
+        doc.fontSize(10).fillColor(GREY).font('Regular')
+           .text('Computer Engineering Department', { align: 'center', width: pageW });
+        doc.fontSize(9).fillColor(LGREY).font('Regular')
+           .text('Graduation Project Evaluation Report', { align: 'center', width: pageW });
+
+        doc.moveDown(0.5);
+        doc.moveTo(50, doc.y).lineTo(50 + pageW, doc.y)
+           .strokeColor(RED).lineWidth(1.5).stroke();
+        doc.moveDown(0.8);
+
+        // ── PROJE BİLGİLERİ ───────────────────────────────
+        doc.fontSize(11).fillColor(RED).font('Bold')
+           .text('PROJECT INFORMATION');
+        doc.moveDown(0.4);
+
+        const infoY = doc.y;
+        doc.fontSize(9).fillColor(LGREY).font('Regular')
+           .text('Project Name', 50, infoY);
+        doc.fontSize(10).fillColor(GREY).font('Bold')
+           .text(project.project_name, 50, infoY + 12);
+
+        doc.moveDown(1.2);
+        doc.fontSize(9).fillColor(LGREY).font('Regular').text('Description');
+        doc.fontSize(9).fillColor(GREY).font('Regular')
+           .text(project.description || 'N/A', { width: pageW });
+
+        doc.moveDown(0.6);
+        doc.fontSize(9).fillColor(LGREY).font('Regular').text('Advisor');
+        doc.fontSize(10).fillColor(GREY).font('Bold')
+           .text(project.advisor || 'N/A');
+
+        doc.moveDown(0.6);
+        doc.fontSize(9).fillColor(LGREY).font('Regular').text('Jury Members');
+        doc.fontSize(9).fillColor(GREY).font('Regular')
+           .text(juries.map(j => j.name).join('  |  ') || 'N/A');
+
+        doc.moveDown(0.6);
+        doc.fontSize(9).fillColor(LGREY).font('Regular').text('Students');
+        doc.fontSize(9).fillColor(GREY).font('Regular')
+           .text(members.map(m => m.name).join('  |  ') || 'N/A');
+
+        doc.moveDown(1);
+        doc.moveTo(50, doc.y).lineTo(50 + pageW, doc.y)
+           .strokeColor('#DDDDDD').lineWidth(0.5).stroke();
+        doc.moveDown(0.8);
+
+        // ── HER ÖĞRENCİ İÇİN DETAYLI DEĞERLENDİRME ───────
+        doc.fontSize(11).fillColor(RED).font('Bold')
+           .text('DETAILED EVALUATIONS');
+        doc.moveDown(0.6);
+
+        for (const member of members) {
+            doc.fontSize(10).fillColor(GREY).font('Bold')
+               .text(`${member.name}  (${member.cats_username})`);
+            doc.moveDown(0.3);
+
+            for (const jury of juries) {
+                const juryAvg = juryWeightedAvg(member.user_id, jury.user_id);
+                const juryScores = scoreMap[member.user_id]?.[jury.user_id] || {};
+
+                doc.fontSize(8.5).fillColor(LGREY).font('Bold')
+                   .text(`  ${jury.name}`, { continued: true });
+                doc.font('Regular').fillColor(LGREY)
+                   .text(`   Weighted Avg: `, { continued: true });
+                doc.fillColor(juryAvg >= 70 ? '#27AE60' : juryAvg >= 50 ? '#E55A00' : RED)
+                   .font('Bold')
+                   .text(juryAvg.toFixed(1));
+
+                const criteriaLine = criteria.map(c => {
+                    const entry = juryScores[c.criteria_name];
+                    return `${c.criteria_name}: ${entry ? entry.score.toFixed(0) : '-'}`;
+                }).join('   ');
+                doc.fontSize(8).fillColor('#AAAAAA').font('Regular')
+                   .text(`  ${criteriaLine}`, { indent: 10 });
+                doc.moveDown(0.3);
+            }
+
+            const finalEntry = finalScores.find(f => f.student_id === member.user_id);
+            const finalScore = finalEntry ? parseFloat(finalEntry.total_weighted_score) : null;
+            const scoreColor = finalScore === null ? LGREY :
+                finalScore >= 70 ? '#27AE60' : finalScore >= 50 ? '#E55A00' : RED;
+            const scoreLabel = finalScore === null ? 'N/A' :
+                finalScore >= 85 ? 'Excellent' : finalScore >= 70 ? 'Good' :
+                finalScore >= 55 ? 'Satisfactory' : finalScore >= 50 ? 'Passing' : 'Failing';
+
+            doc.moveDown(0.1);
+            doc.fontSize(9).fillColor(LGREY).font('Regular')
+               .text('  Final Score: ', { continued: true });
+            doc.fontSize(11).fillColor(scoreColor).font('Bold')
+               .text(finalScore !== null ? finalScore.toFixed(1) : 'N/A', { continued: true });
+            doc.fontSize(9).fillColor(scoreColor).font('Regular')
+               .text(`  (${scoreLabel})`);
+
+            doc.moveDown(0.8);
+            doc.moveTo(50, doc.y).lineTo(50 + pageW, doc.y)
+               .strokeColor('#EEEEEE').lineWidth(0.5).stroke();
+            doc.moveDown(0.6);
+        }
+
+        // ── GENEL RANKING ──────────────────────────────────
+        doc.fontSize(11).fillColor(RED).font('Bold')
+           .text('OVERALL RANKING');
+        doc.moveDown(0.5);
+
+        finalScores.forEach((f, idx) => {
+            const score = parseFloat(f.total_weighted_score);
+            const color = score >= 70 ? '#27AE60' : score >= 50 ? '#E55A00' : RED;
+            const label = score >= 85 ? 'Excellent' : score >= 70 ? 'Good' :
+                score >= 55 ? 'Satisfactory' : score >= 50 ? 'Passing' : 'Failing';
+
+            doc.fontSize(9).fillColor(GREY).font('Bold')
+               .text(`#${idx + 1}  ${f.student_name}`, 50, doc.y, { continued: true, width: pageW - 80 });
+            doc.fillColor(color).font('Bold')
+               .text(`${score.toFixed(1)}  `, { continued: true });
+            doc.font('Regular').fillColor(color)
+               .text(`(${label})`);
+            doc.moveDown(0.4);
+        });
+
+        // ── FOOTER ─────────────────────────────────────────
+        doc.moveDown(1);
+        doc.moveTo(50, doc.y).lineTo(50 + pageW, doc.y)
+           .strokeColor('#DDDDDD').lineWidth(0.5).stroke();
+        doc.moveDown(0.4);
+        doc.fontSize(8).fillColor(LGREY).font('Regular')
+           .text(
+               `This report was automatically generated by the Graduation Project Evaluation System on ${exportDate}.`,
+               { align: 'center', width: pageW }
+           );
+
+        doc.end();
+
+    } catch (err) {
+        console.error('PDF export error:', err.message);
         res.status(500).json({ error: err.message });
     }
 });

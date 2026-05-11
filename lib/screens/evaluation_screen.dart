@@ -3,6 +3,8 @@ import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'package:capstone_evaluationapp/models/project.dart';
 import 'package:capstone_evaluationapp/screens/results_dashboard.dart';
+import 'package:url_launcher/url_launcher.dart';
+import 'package:capstone_evaluationapp/config.dart';
 
 class EvaluationScreen extends StatefulWidget {
   final CapstoneProject project;
@@ -26,9 +28,7 @@ class _EvaluationScreenState extends State<EvaluationScreen> {
   String? _expandedMemberId;
   String? _gradingMemberId;
 
-  /// studentId (cats_username) → MemberEvaluation
   Map<String, MemberEvaluation> _evaluations = {};
-
   List<Map<String, dynamic>> _criteria = [];
   bool _isLoading = true;
 
@@ -38,18 +38,10 @@ class _EvaluationScreenState extends State<EvaluationScreen> {
     _initialize();
   }
 
-  // ──────────────────────────────────────────────────────────
-  // INITIALIZE: Backend'den kriterleri ve evaluation durumlarını çek.
-  // SharedPreferences tamamen kaldırıldı.
-  // is_submitted=TRUE  → submitted/locked
-  // is_submitted=FALSE → unlock onaylandı, inProgress
-  // Hiç kayıt yok     → notStarted
-  // ──────────────────────────────────────────────────────────
   Future<void> _initialize() async {
     try {
-      // 1. Kriterleri çek
       final criteriaResp = await http.get(
-        Uri.parse('http://localhost:3000/api/criteria'),
+        Uri.parse('${AppConfig.baseUrl}/api/criteria'),
       );
       if (criteriaResp.statusCode == 200) {
         final List data = jsonDecode(criteriaResp.body);
@@ -62,14 +54,12 @@ class _EvaluationScreenState extends State<EvaluationScreen> {
 
       final criteriaNames = _criteria.map((c) => c['name'] as String).toList();
 
-      // 2. Bu jürinin bu projedeki tüm evaluation kayıtlarını çek
       final evalResp = await http.get(
         Uri.parse(
-          'http://localhost:3000/api/evaluations/jury/${widget.juryId}/project/${widget.project.id}',
+          '${AppConfig.baseUrl}/api/evaluations/jury/${widget.juryId}/project/${widget.project.id}',
         ),
       );
 
-      // Her üye için boş başlangıç durumu
       final Map<String, MemberEvaluation> evaluations = {
         for (final m in widget.project.members)
           m.studentId: MemberEvaluation.empty(criteriaNames),
@@ -78,8 +68,6 @@ class _EvaluationScreenState extends State<EvaluationScreen> {
       if (evalResp.statusCode == 200) {
         final List backendRows = jsonDecode(evalResp.body);
 
-        // Backend satırlarını student'a göre grupla
-        // student_id burada int (user_id), bunu cats_username'e çevirmemiz lazım
         final Map<String, List<dynamic>> byStudent = {};
         for (final row in backendRows) {
           final studentUserId = row['student_id'].toString();
@@ -93,15 +81,10 @@ class _EvaluationScreenState extends State<EvaluationScreen> {
           byStudent[member.studentId]!.add(row);
         }
 
-        // Her üye için durumu belirle
         for (final member in widget.project.members) {
           final rows = byStudent[member.studentId];
-          if (rows == null || rows.isEmpty) {
-            // Hiç kayıt yok → notStarted (zaten default)
-            continue;
-          }
+          if (rows == null || rows.isEmpty) continue;
 
-          // Skorları al
           final scores = <String, double?>{};
           final ids    = <int>[];
           for (final r in rows) {
@@ -109,20 +92,16 @@ class _EvaluationScreenState extends State<EvaluationScreen> {
             ids.add(r['evaluation_id'] as int);
           }
 
-          // Tüm kayıtlar is_submitted=TRUE ise kilitli
           final allSubmitted = rows.every((r) => r['is_submitted'] == true);
-          // Herhangi biri is_submitted=FALSE ise unlock onaylandı
           final anyUnlocked  = rows.any((r) => r['is_submitted'] == false);
 
           if (anyUnlocked) {
-            // Unlock onaylandı → jüri tekrar düzenleyebilir
             evaluations[member.studentId] = MemberEvaluation(
               scores: scores,
               status: MemberEvaluationStatus.inProgress,
               evaluationIds: ids,
             );
           } else if (allSubmitted) {
-            // Tamamen kilitli
             evaluations[member.studentId] = MemberEvaluation(
               scores: scores,
               status: MemberEvaluationStatus.submitted,
@@ -150,11 +129,6 @@ class _EvaluationScreenState extends State<EvaluationScreen> {
       c['name'] as String: (c['weight'] as num).toDouble()
   };
 
-  // ──────────────────────────────────────────────────────────
-  // DRAFT: Sadece local state'e yaz (SharedPreferences yok).
-  // Kullanıcı "Save Draft" basınca ekranda görünsün ama
-  // backend'e gitmesin. Submit'te backend'e gidecek.
-  // ──────────────────────────────────────────────────────────
   void _saveDraft(ProjectMember member, Map<String, double?> scores) {
     final hasAny = scores.values.any((v) => v != null);
     final newEval = MemberEvaluation(
@@ -162,7 +136,6 @@ class _EvaluationScreenState extends State<EvaluationScreen> {
       status: hasAny
           ? MemberEvaluationStatus.inProgress
           : MemberEvaluationStatus.notStarted,
-      // evaluationIds: unlock durumunda mevcut id'leri koru
       evaluationIds: _evaluations[member.studentId]?.evaluationIds ?? [],
     );
     setState(() {
@@ -170,9 +143,6 @@ class _EvaluationScreenState extends State<EvaluationScreen> {
     });
   }
 
-  // ──────────────────────────────────────────────────────────
-  // SUBMIT: Backend'e POST et. Dönen evaluation_id'leri sakla.
-  // ──────────────────────────────────────────────────────────
   Future<bool> _submit(ProjectMember member, Map<String, double?> scores) async {
     for (final c in _criteriaNames) {
       final v = scores[c];
@@ -186,7 +156,7 @@ class _EvaluationScreenState extends State<EvaluationScreen> {
       for (final c in _criteria) {
         final score = scores[c['name']];
         final resp = await http.post(
-          Uri.parse('http://localhost:3000/api/evaluations'),
+          Uri.parse('${AppConfig.baseUrl}/api/evaluations'),
           headers: {'Content-Type': 'application/json'},
           body: jsonEncode({
             'jury_id':    widget.juryId,
@@ -213,7 +183,6 @@ class _EvaluationScreenState extends State<EvaluationScreen> {
 
       if (anyFailed) return false;
 
-      // State'i güncelle
       setState(() {
         _evaluations[member.studentId] = MemberEvaluation(
           scores: scores,
@@ -223,12 +192,11 @@ class _EvaluationScreenState extends State<EvaluationScreen> {
         );
       });
 
-      // Tüm üyeler submit edildiyse final skor hesaplatma
       final allSubmitted = widget.project.members.every((m) =>
           _evaluations[m.studentId]?.status == MemberEvaluationStatus.submitted);
       if (allSubmitted) {
         await http.post(
-          Uri.parse('http://localhost:3000/api/results/${widget.project.id}'),
+          Uri.parse('${AppConfig.baseUrl}/api/results/${widget.project.id}'),
         );
       }
 
@@ -383,6 +351,8 @@ class _EvaluationScreenState extends State<EvaluationScreen> {
               ),
             ],
           ),
+          const SizedBox(height: 12),
+          _ThesisSection(projectId: int.parse(widget.project.id)),
         ],
       ),
     );
@@ -1262,7 +1232,7 @@ class _EvaluationScreenState extends State<EvaluationScreen> {
   }) async {
     try {
       final resp = await http.post(
-        Uri.parse('http://localhost:3000/api/unlock-requests'),
+        Uri.parse('${AppConfig.baseUrl}/api/unlock-requests'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
           'jury_id':    widget.juryId,
@@ -1288,5 +1258,130 @@ class _EvaluationScreenState extends State<EvaluationScreen> {
     if (dt == null) return '';
     const months = ['','Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
     return 'on ${dt.day} ${months[dt.month]} ${dt.year}';
+  }
+}
+
+// ════════════════════════════════════════════════════════════
+// Thesis Section Widget (Jüri için rapor görüntüleme)
+// ════════════════════════════════════════════════════════════
+class _ThesisSection extends StatefulWidget {
+  final int projectId;
+  const _ThesisSection({required this.projectId});
+
+  @override
+  State<_ThesisSection> createState() => _ThesisSectionState();
+}
+
+class _ThesisSectionState extends State<_ThesisSection> {
+  static const Color ikuRed = Color(0xFFD31018);
+  static const Color ikuGrey = Color(0xFF4A4A49);
+
+  List<dynamic> _reports = [];
+  bool _isLoading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    try {
+      final res = await http.get(
+        Uri.parse('${AppConfig.baseUrl}/api/reports/${widget.projectId}'),
+      );
+      if (res.statusCode == 200) {
+        setState(() { _reports = jsonDecode(res.body); _isLoading = false; });
+      } else {
+        setState(() => _isLoading = false);
+      }
+    } catch (_) {
+      setState(() => _isLoading = false);
+    }
+  }
+
+  Future<void> _openReport(String filePath) async {
+    final url = Uri.parse('${AppConfig.baseUrl}/$filePath');
+    if (await canLaunchUrl(url)) {
+      await launchUrl(url, mode: LaunchMode.externalApplication);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_isLoading) {
+      return const Padding(
+        padding: EdgeInsets.symmetric(vertical: 8),
+        child: Center(child: CircularProgressIndicator(color: ikuRed, strokeWidth: 2)),
+      );
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Icon(Icons.description_outlined, size: 14, color: Colors.grey.shade400),
+            const SizedBox(width: 6),
+            Text(
+              'THESIS',
+              style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w700,
+                  color: Colors.grey.shade400,
+                  letterSpacing: 0.8),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        if (_reports.isEmpty)
+          Text(
+            'No thesis uploaded yet.',
+            style: TextStyle(fontSize: 12, color: Colors.grey.shade400),
+          )
+        else
+          ..._reports.map((report) {
+            final filename = report['filename'] ?? 'thesis.pdf';
+            final studentName = report['student_name'] ?? '';
+            return GestureDetector(
+              onTap: () => _openReport(report['file_path']),
+              child: Container(
+                margin: const EdgeInsets.only(bottom: 6),
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                decoration: BoxDecoration(
+                  color: ikuRed.withOpacity(0.05),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: ikuRed.withOpacity(0.15)),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.picture_as_pdf_outlined, color: ikuRed, size: 16),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(filename,
+                              style: const TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w600,
+                                  color: ikuGrey),
+                              overflow: TextOverflow.ellipsis),
+                          if (studentName.isNotEmpty)
+                            Text(studentName,
+                                style: TextStyle(
+                                    fontSize: 10, color: Colors.grey.shade500)),
+                        ],
+                      ),
+                    ),
+                    Icon(Icons.open_in_new_outlined,
+                        size: 14, color: ikuRed.withOpacity(0.7)),
+                  ],
+                ),
+              ),
+            );
+          }),
+      ],
+    );
   }
 }

@@ -3,7 +3,7 @@ import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'package:capstone_evaluationapp/models/project.dart';
 import 'package:capstone_evaluationapp/screens/evaluation_screen.dart';
-import 'package:capstone_evaluationapp/screens/results_dashboard.dart';
+import 'package:capstone_evaluationapp/config.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -45,13 +45,13 @@ class _HomeScreenState extends State<HomeScreen> {
     try {
       final juryId = _user!['user_id'];
 
-      final criteriaRes = await http.get(Uri.parse('http://localhost:3000/api/criteria'));
+      final criteriaRes = await http.get(Uri.parse('${AppConfig.baseUrl}/api/criteria'));
       if (criteriaRes.statusCode == 200) {
         final List cData = jsonDecode(criteriaRes.body);
         _criteriaNames = cData.map((c) => c['criteria_name'] as String).toList();
       }
 
-      final response = await http.get(Uri.parse('http://localhost:3000/api/assignments/jury/$juryId'));
+      final response = await http.get(Uri.parse('${AppConfig.baseUrl}/api/assignments/jury/$juryId'));
       if (response.statusCode != 200) {
         setState(() { _errorMessage = 'Failed to load projects.'; _isLoading = false; });
         return;
@@ -63,7 +63,7 @@ class _HomeScreenState extends State<HomeScreen> {
       final enriched = <CapstoneProject>[];
       for (final project in projects) {
         final evalRes = await http.get(
-          Uri.parse('http://localhost:3000/api/evaluations/jury/$juryId/project/${project.id}'),
+          Uri.parse('${AppConfig.baseUrl}/api/evaluations/jury/$juryId/project/${project.id}'),
         );
 
         final Map<String, MemberEvaluation> memberEvals = {
@@ -129,31 +129,7 @@ class _HomeScreenState extends State<HomeScreen> {
     _loadProjects();
   }
 
-  Future<void> _openCompletedProject(CapstoneProject project) async {
-    final Map<String, Map<String, double?>> confirmedScores = {
-      for (final m in project.members)
-        m.studentId: project.memberEvaluations[m.studentId]?.scores ?? {for (final c in _criteriaNames) c: null},
-    };
 
-    try {
-      final criteriaRes = await http.get(Uri.parse('http://localhost:3000/api/criteria'));
-      if (criteriaRes.statusCode != 200) return;
-
-      final List cData = jsonDecode(criteriaRes.body);
-      final Map<String, double> criteriaWeights = {
-        for (final c in cData) c['criteria_name'] as String: (c['weight'] as num).toDouble()
-      };
-      final criteria = cData.map((c) => c['criteria_name'] as String).toList();
-
-      if (!mounted) return;
-      Navigator.of(context).push(MaterialPageRoute(
-        builder: (_) => _DashboardPage(
-          project: project, confirmedScores: confirmedScores,
-          criteria: criteria, criteriaWeights: criteriaWeights, user: _user!,
-        ),
-      ));
-    } catch (_) {}
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -369,13 +345,7 @@ class _HomeScreenState extends State<HomeScreen> {
         SizedBox(
           width: double.infinity,
           child: ElevatedButton.icon(
-            onPressed: () {
-              if (project.isFullySubmitted) {
-                _openCompletedProject(project);
-              } else {
-                _openEvaluation(project);
-              }
-            },
+            onPressed: () => _openEvaluation(project),
             icon: Icon(project.isFullySubmitted ? Icons.visibility : Icons.edit_note, size: 18),
             label: Text(project.isFullySubmitted
                 ? 'View Evaluation'
@@ -521,53 +491,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 }
 
-// ════════════════════════════════════════════════════════════
-// Dashboard Page
-// ════════════════════════════════════════════════════════════
-class _DashboardPage extends StatelessWidget {
-  final CapstoneProject project;
-  final Map<String, Map<String, double?>> confirmedScores;
-  final List<String> criteria;
-  final Map<String, double> criteriaWeights;
-  final Map<String, dynamic> user;
 
-  const _DashboardPage({
-    required this.project, required this.confirmedScores,
-    required this.criteria, required this.criteriaWeights, required this.user,
-  });
-
-  static const Color ikuGrey = Color(0xFF4A4A49);
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: const Color(0xFFF5F5F7),
-      appBar: AppBar(
-        backgroundColor: Colors.white,
-        elevation: 0,
-        surfaceTintColor: Colors.white,
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back_ios_new, size: 18, color: ikuGrey),
-          onPressed: () => Navigator.of(context).pop(),
-        ),
-        title: Text(project.title,
-            style: const TextStyle(color: ikuGrey, fontWeight: FontWeight.w700, fontSize: 16),
-            overflow: TextOverflow.ellipsis),
-        bottom: PreferredSize(
-          preferredSize: const Size.fromHeight(1),
-          child: Container(height: 1, color: Colors.grey.shade200),
-        ),
-      ),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(16),
-        child: ResultsDashboard(
-          project: project, confirmedScores: confirmedScores,
-          criteria: criteria, criteriaWeights: criteriaWeights,
-        ),
-      ),
-    );
-  }
-}
 
 // ════════════════════════════════════════════════════════════
 // Advisor Projects List (Sidebar)
@@ -596,7 +520,7 @@ class _AdvisorProjectsListState extends State<_AdvisorProjectsList> {
   Future<void> _load() async {
     if (widget.juryId == null) { setState(() => _isLoading = false); return; }
     try {
-      final res = await http.get(Uri.parse('http://localhost:3000/api/projects/advisor/${widget.juryId}'));
+      final res = await http.get(Uri.parse('${AppConfig.baseUrl}/api/projects/advisor/${widget.juryId}'));
       if (res.statusCode == 200) {
         setState(() { _projects = jsonDecode(res.body); _isLoading = false; });
       } else {
@@ -687,7 +611,7 @@ class _AdvisorProjectsListState extends State<_AdvisorProjectsList> {
                   setDialog(() => saving = true);
                   try {
                     final res = await http.put(
-                      Uri.parse('http://localhost:3000/api/projects/${project['project_id']}'),
+                      Uri.parse('${AppConfig.baseUrl}/api/projects/${project['project_id']}'),
                       headers: {'Content-Type': 'application/json'},
                       body: jsonEncode({
                         'project_name': nameController.text.trim(),

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
+import 'package:capstone_evaluationapp/config.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -27,7 +28,7 @@ class _LoginScreenState extends State<LoginScreen> {
 
     try {
       final response = await http.post(
-        Uri.parse('http://localhost:3000/api/auth/login'),
+        Uri.parse('${AppConfig.baseUrl}/api/auth/login'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
           'cats_username': _usernameController.text.trim(),
@@ -69,6 +70,78 @@ class _LoginScreenState extends State<LoginScreen> {
         _isLoading = false;
       });
     }
+  }
+
+  void _showServerSettings() {
+    final ipController = TextEditingController(text: AppConfig.currentIp);
+
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+        title: const Row(
+          children: [
+            Icon(Icons.settings_ethernet, color: ikuRed, size: 20),
+            SizedBox(width: 8),
+            Text('Server Settings',
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: ikuGrey)),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Enter the IP address of the server:',
+                style: TextStyle(fontSize: 12, color: Colors.grey.shade600)),
+            const SizedBox(height: 10),
+            TextField(
+              controller: ipController,
+              keyboardType: TextInputType.number,
+              decoration: InputDecoration(
+                labelText: 'Server IP',
+                hintText: '192.168.43.105',
+                filled: true,
+                fillColor: Colors.grey.shade50,
+                prefixIcon: const Icon(Icons.computer, color: ikuRed, size: 18),
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text('Current: ${AppConfig.baseUrl}',
+                style: TextStyle(fontSize: 10, color: Colors.grey.shade400)),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('Cancel', style: TextStyle(color: ikuGrey)),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              final ip = ipController.text.trim();
+              if (ip.isNotEmpty) {
+                AppConfig.setBaseUrl(ip);
+                Navigator.of(ctx).pop();
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text('Server: ${AppConfig.baseUrl}'),
+                    backgroundColor: const Color(0xFF27AE60),
+                    duration: const Duration(seconds: 2),
+                  ),
+                );
+              }
+            },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: ikuRed,
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+            ),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -186,9 +259,16 @@ class _LoginScreenState extends State<LoginScreen> {
                                 style: TextStyle(fontWeight: FontWeight.bold),
                               ),
                       ),
+                      const SizedBox(height: 12),
+                      TextButton.icon(
+                        onPressed: _showServerSettings,
+                        icon: Icon(Icons.settings_ethernet, size: 16, color: Colors.grey.shade400),
+                        label: Text('Server Settings',
+                            style: TextStyle(fontSize: 12, color: Colors.grey.shade400)),
+                      ),
                     ],
                   ),
-                  const SizedBox(height: 60),
+                  const SizedBox(height: 60),                    
                 ],
               ),
             ),

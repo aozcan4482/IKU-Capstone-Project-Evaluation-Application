@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
+import 'package:url_launcher/url_launcher.dart';
+import 'package:capstone_evaluationapp/config.dart';
 
 class AdminScreen extends StatefulWidget {
   const AdminScreen({super.key});
@@ -13,7 +15,7 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
   static const Color ikuRed = Color(0xFFD31018);
   static const Color ikuGrey = Color(0xFF4A4A49);
   static const Color bgColor = Color(0xFFF5F5F7);
-  static const String _apiBase = 'http://localhost:3000';
+  static final String _apiBase = AppConfig.baseUrl;
 
   Map<String, dynamic>? _user;
   late TabController _tabController;
@@ -273,6 +275,7 @@ class _ProjectsTabState extends State<_ProjectsTab> with AutomaticKeepAliveClien
         studentUsers: _studentUsers,
         apiBase: widget.apiBase,
         onRefresh: _load,
+        adminId: widget.adminId,
       ),
     ));
   }
@@ -287,6 +290,7 @@ class _ProjectDetailScreen extends StatefulWidget {
   final List<dynamic> studentUsers;
   final String apiBase;
   final VoidCallback onRefresh;
+  final int adminId;
 
   const _ProjectDetailScreen({
     required this.project,
@@ -294,6 +298,7 @@ class _ProjectDetailScreen extends StatefulWidget {
     required this.studentUsers,
     required this.apiBase,
     required this.onRefresh,
+    required this.adminId,
   });
 
   @override
@@ -368,6 +373,8 @@ class _ProjectDetailScreenState extends State<_ProjectDetailScreen> {
                 _sectionCard(title: 'JURY MEMBERS', icon: Icons.people_outline, child: _jurySection()),
                 const SizedBox(height: 12),
                 _sectionCard(title: 'STUDENTS', icon: Icons.person_outline, child: _studentsSection()),
+                const SizedBox(height: 12),
+                _sectionCard(title: 'RESULTS', icon: Icons.grade_outlined, child: _publishSection()),
               ],
             ),
     );
@@ -445,7 +452,6 @@ class _ProjectDetailScreenState extends State<_ProjectDetailScreen> {
       );
 
       if (res.statusCode == 200) {
-        // Projeyi backend'den yeniden çek
         final projectRes = await http.get(
           Uri.parse('${widget.apiBase}/api/projects/${_project['project_id']}'),
         );
@@ -620,6 +626,169 @@ class _ProjectDetailScreenState extends State<_ProjectDetailScreen> {
         createRole: createRole, apiBase: widget.apiBase,
       ),
     );
+  }
+
+  Widget _publishSection() {
+      final status = _project['status'] ?? 'Pending';
+      final isFinalized = status == 'Finalized';
+      final isPublished = _project['results_published'] == true;
+
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // ── Durum göstergesi ──
+          if (isPublished)
+            Container(
+              padding: const EdgeInsets.all(10),
+              margin: const EdgeInsets.only(bottom: 10),
+              decoration: BoxDecoration(
+                color: const Color(0xFF27AE60).withOpacity(0.08),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: const Color(0xFF27AE60).withOpacity(0.3)),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.check_circle_outline, color: Color(0xFF27AE60), size: 16),
+                  const SizedBox(width: 8),
+                  const Expanded(
+                    child: Text(
+                      'Results published — students can see their scores.',
+                      style: TextStyle(fontSize: 12, color: Color(0xFF27AE60), fontWeight: FontWeight.w600),
+                    ),
+                  ),
+                ],
+              ),
+            )
+          else if (!isFinalized)
+            Container(
+              padding: const EdgeInsets.all(10),
+              margin: const EdgeInsets.only(bottom: 10),
+              decoration: BoxDecoration(
+                color: Colors.orange.shade50,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: Colors.orange.shade200),
+              ),
+              child: Row(
+                children: [
+                  Icon(Icons.hourglass_empty, size: 14, color: Colors.orange.shade700),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Project must be Finalized before publishing results.\nCurrent status: $status',
+                      style: TextStyle(fontSize: 12, color: Colors.orange.shade800),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
+          // ── İki bağımsız buton yan yana ──
+          Row(
+            children: [
+              // 1) Publish Results
+              Expanded(
+                child: ElevatedButton.icon(
+                  onPressed: (!isFinalized || isPublished) ? null : _publishResults,
+                  icon: Icon(
+                    isPublished ? Icons.check_circle : Icons.send_outlined,
+                    size: 16,
+                  ),
+                  label: Text(isPublished ? 'Published' : 'Publish Results'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: isPublished ? const Color(0xFF27AE60) : ikuRed,
+                    foregroundColor: Colors.white,
+                    disabledBackgroundColor: isPublished
+                        ? const Color(0xFF27AE60).withOpacity(0.7)
+                        : Colors.grey.shade300,
+                    disabledForegroundColor: isPublished
+                        ? Colors.white
+                        : Colors.grey.shade500,
+                    padding: const EdgeInsets.symmetric(vertical: 13),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                    textStyle: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 10),
+              // 2) Export PDF (her zaman aktif)
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: _exportPdf,
+                  icon: const Icon(Icons.picture_as_pdf_outlined, size: 16),
+                  label: const Text('Export PDF'),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: ikuRed,
+                    side: BorderSide(color: ikuRed.withOpacity(0.5)),
+                    padding: const EdgeInsets.symmetric(vertical: 13),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                    textStyle: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
+      );
+    }
+
+  Future<void> _publishResults() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+        title: const Text('Publish Results',
+            style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: ikuGrey)),
+        content: const Text(
+          'Students will be able to see their final scores. This action cannot be undone.',
+          style: TextStyle(fontSize: 13, color: ikuGrey),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Cancel', style: TextStyle(color: ikuGrey)),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: ikuRed,
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+            ),
+            child: const Text('Publish'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+
+    try {
+      final res = await http.put(
+        Uri.parse('${widget.apiBase}/api/projects/${_project['project_id']}/publish-results'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'admin_user_id': widget.adminId}),
+      );
+      if (res.statusCode == 200) {
+        await _load();
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Results published. Students can now see their scores.'),
+            backgroundColor: Color(0xFF27AE60),
+          ),
+        );
+      }
+    } catch (_) {}
+  }
+
+  // _exportPdf metodu _ProjectDetailScreenState içinde — widget ve _project'e erişebilir
+  Future<void> _exportPdf() async {
+    final url = Uri.parse(
+      '${widget.apiBase}/api/reports/export/${_project['project_id']}',
+    );
+    if (await canLaunchUrl(url)) {
+      await launchUrl(url, mode: LaunchMode.externalApplication);
+    }
   }
 }
 
