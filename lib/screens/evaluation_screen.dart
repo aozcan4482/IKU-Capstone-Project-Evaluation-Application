@@ -1302,8 +1302,13 @@ class _ThesisSectionState extends State<_ThesisSection> {
 
   Future<void> _openReport(String filePath) async {
     final url = Uri.parse('${AppConfig.baseUrl}/$filePath');
-    if (await canLaunchUrl(url)) {
+    try {
       await launchUrl(url, mode: LaunchMode.externalApplication);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not open file: $e'), backgroundColor: Colors.red),
+      );
     }
   }
 

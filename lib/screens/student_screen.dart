@@ -47,7 +47,7 @@ class _StudentScreenState extends State<StudentScreen> {
         Uri.parse('${AppConfig.baseUrl}/api/student/$studentId/project'),
       );
       final resultRes = await http.get(
-        Uri.parse('${AppConfig.baseUrl}/api/student/$studentId/project'),
+        Uri.parse('${AppConfig.baseUrl}/api/student/$studentId/result'),
       );
 
       if (projectRes.statusCode == 200) {

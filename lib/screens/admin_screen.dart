@@ -74,12 +74,13 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
       elevation: 0,
       surfaceTintColor: Colors.white,
       automaticallyImplyLeading: false,
-      titleSpacing: 12,
+      titleSpacing: 16,
+      toolbarHeight: 64,
       title: Row(
         children: [
           CircleAvatar(
             backgroundColor: ikuRed,
-            radius: 16,
+            radius: 18,
             child: Text(initials,
                 style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12)),
           ),
@@ -111,10 +112,13 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
         ],
       ),
       actions: [
-        TextButton.icon(
-          onPressed: () => Navigator.of(context).pushReplacementNamed('/login'),
-          icon: const Icon(Icons.logout, color: ikuRed, size: 18),
-          label: const Text('Log Out', style: TextStyle(color: ikuRed, fontSize: 13)),
+        Padding(
+          padding: const EdgeInsets.only(right: 8),
+          child: TextButton.icon(
+            onPressed: () => Navigator.of(context).pushReplacementNamed('/login'),
+            icon: const Icon(Icons.logout, color: ikuRed, size: 18),
+            label: const Text('Log Out', style: TextStyle(color: ikuRed, fontSize: 13)),
+          ),
         ),
       ],
       bottom: PreferredSize(
@@ -732,62 +736,73 @@ class _ProjectDetailScreenState extends State<_ProjectDetailScreen> {
     }
 
   Future<void> _publishResults() async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-        title: const Text('Publish Results',
-            style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: ikuGrey)),
-        content: const Text(
-          'Students will be able to see their final scores. This action cannot be undone.',
-          style: TextStyle(fontSize: 13, color: ikuGrey),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(false),
-            child: const Text('Cancel', style: TextStyle(color: ikuGrey)),
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+          title: const Text('Publish Results',
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: ikuGrey)),
+          content: const Text(
+            'Students will be able to see their final scores. This action cannot be undone.',
+            style: TextStyle(fontSize: 13, color: ikuGrey),
           ),
-          ElevatedButton(
-            onPressed: () => Navigator.of(ctx).pop(true),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: ikuRed,
-              foregroundColor: Colors.white,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(false),
+              child: const Text('Cancel', style: TextStyle(color: ikuGrey)),
             ),
-            child: const Text('Publish'),
-          ),
-        ],
-      ),
-    );
-
-    if (confirmed != true) return;
-
-    try {
-      final res = await http.put(
-        Uri.parse('${widget.apiBase}/api/projects/${_project['project_id']}/publish-results'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'admin_user_id': widget.adminId}),
+            ElevatedButton(
+              onPressed: () => Navigator.of(ctx).pop(true),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: ikuRed,
+                foregroundColor: Colors.white,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+              ),
+              child: const Text('Publish'),
+            ),
+          ],
+        ),
       );
-      if (res.statusCode == 200) {
-        await _load();
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Results published. Students can now see their scores.'),
-            backgroundColor: Color(0xFF27AE60),
-          ),
+
+      if (confirmed != true) return;
+
+      try {
+        // 1) Önce final skorları hesaplat
+        await http.post(
+          Uri.parse('${widget.apiBase}/api/results/${_project['project_id']}'),
         );
-      }
-    } catch (_) {}
-  }
+
+        // 2) Sonra publish et
+        final res = await http.put(
+          Uri.parse('${widget.apiBase}/api/projects/${_project['project_id']}/publish-results'),
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode({'admin_user_id': widget.adminId}),
+        );
+        if (res.statusCode == 200) {
+          await _load();
+          if (!mounted) return;
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Results published. Students can now see their scores.'),
+              backgroundColor: Color(0xFF27AE60),
+            ),
+          );
+        }
+      } catch (_) {}
+    }
 
   // _exportPdf metodu _ProjectDetailScreenState içinde — widget ve _project'e erişebilir
   Future<void> _exportPdf() async {
     final url = Uri.parse(
       '${widget.apiBase}/api/reports/export/${_project['project_id']}',
     );
-    if (await canLaunchUrl(url)) {
+    try {
       await launchUrl(url, mode: LaunchMode.externalApplication);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not open PDF: $e'), backgroundColor: Colors.red),
+      );
     }
   }
 }

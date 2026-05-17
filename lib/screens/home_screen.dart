@@ -571,36 +571,99 @@ class _AdvisorProjectsListState extends State<_AdvisorProjectsList> {
   void _openEditDialog(dynamic project) {
     final nameController = TextEditingController(text: project['project_name'] ?? '');
     final descController = TextEditingController(text: project['description'] ?? '');
+    List<dynamic>? members;
+    bool loadingMembers = true;
+    bool saving = false;
+    bool membersLoadStarted = false;
 
     showDialog(
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setDialog) {
-          bool saving = false;
+          if (!membersLoadStarted) {
+            membersLoadStarted = true;
+            http.get(
+              Uri.parse('${AppConfig.baseUrl}/api/projects/${project['project_id']}/members'),
+            ).then((res) {
+              if (res.statusCode == 200) {
+                setDialog(() {
+                  members = jsonDecode(res.body);
+                  loadingMembers = false;
+                });
+              } else {
+                setDialog(() => loadingMembers = false);
+              }
+            }).catchError((_) {
+              setDialog(() => loadingMembers = false);
+            });
+          }
+
           return AlertDialog(
             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
             title: const Text('Edit Project',
                 style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: ikuGrey)),
-            content: Column(mainAxisSize: MainAxisSize.min, children: [
-              TextField(
-                controller: nameController,
-                decoration: InputDecoration(
-                  labelText: 'Project Name', filled: true, fillColor: Colors.grey.shade50,
-                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
-                  contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            content: SingleChildScrollView(
+              child: Column(mainAxisSize: MainAxisSize.min, children: [
+                TextField(
+                  controller: nameController,
+                  decoration: InputDecoration(
+                    labelText: 'Project Name', filled: true, fillColor: Colors.grey.shade50,
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                  ),
                 ),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: descController,
-                maxLines: 3,
-                decoration: InputDecoration(
-                  labelText: 'Description', filled: true, fillColor: Colors.grey.shade50,
-                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
-                  contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: descController,
+                  maxLines: 3,
+                  decoration: InputDecoration(
+                    labelText: 'Description', filled: true, fillColor: Colors.grey.shade50,
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                  ),
                 ),
-              ),
-            ]),
+                const SizedBox(height: 16),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text('STUDENTS',
+                      style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700,
+                          color: Colors.grey.shade400, letterSpacing: 0.8)),
+                ),
+                const SizedBox(height: 8),
+                if (loadingMembers)
+                  const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 8),
+                    child: Center(child: CircularProgressIndicator(color: ikuRed, strokeWidth: 2)),
+                  )
+                else if (members == null || members!.isEmpty)
+                  Text('No students assigned.',
+                      style: TextStyle(fontSize: 12, color: Colors.grey.shade500))
+                else
+                  ...members!.map((m) => Padding(
+                    padding: const EdgeInsets.only(bottom: 6),
+                    child: Row(children: [
+                      CircleAvatar(
+                        radius: 14,
+                        backgroundColor: ikuRed.withOpacity(0.1),
+                        child: Text((m['name'] ?? '?').toString().substring(0, 1),
+                            style: const TextStyle(color: ikuRed, fontSize: 12, fontWeight: FontWeight.bold)),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(m['name'] ?? 'Unknown',
+                                style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: ikuGrey)),
+                            Text(m['cats_username'] ?? '',
+                                style: TextStyle(fontSize: 10, color: Colors.grey.shade500)),
+                          ],
+                        ),
+                      ),
+                    ]),
+                  )),
+              ]),
+            ),
             actions: [
               TextButton(
                 onPressed: () => Navigator.of(ctx).pop(),
